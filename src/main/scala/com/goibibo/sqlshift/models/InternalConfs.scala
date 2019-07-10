@@ -24,7 +24,8 @@ private[sqlshift] object InternalConfs {
     case class TableDetails(validFields: Seq[DBField],
                             invalidFields: Seq[DBField],
                             sortKeys: Seq[String],
-                            distributionKey: Option[String]) {
+                            distributionKey: Option[String],
+                            primaryKey:Option[String]) {
 
         override def toString: String = {
             s"""{

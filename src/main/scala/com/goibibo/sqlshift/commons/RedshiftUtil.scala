@@ -140,8 +140,10 @@ object RedshiftUtil {
         rs.close()
         stmt.close()
         val sortKeys = getIndexes(con, setColumns, conf)
-        val distKey = getDistStyleAndKey(con, setColumns, conf, internalConfig)
-        TableDetails(validFields, invalidFields, sortKeys, distKey)
+        val primaryKey = getPrimaryKey(con, conf)
+        val distKey = getDistStyleAndKey(setColumns, internalConfig, primaryKey)
+        
+        TableDetails(validFields, invalidFields, sortKeys, distKey, primaryKey)
     }
 
     def getTableNameWithSchema(rc: DBConfiguration): String = {
@@ -196,42 +198,55 @@ object RedshiftUtil {
         tableDetails
     }
 
-    def getDistStyleAndKey(con: Connection, setColumns: Set[String], conf: DBConfiguration, internalConfig: InternalConfig): Option[String] = {
+    def getPrimaryKey(con:Connection, conf: DBConfiguration):Option[String] = {
+        //TOOD: Make get primary keys a function
+        val meta = con.getMetaData
+        val resPrimaryKeys = meta.getPrimaryKeys(conf.db, null, conf.tableName)
+        var primaryKeys = scala.collection.immutable.Set[String]()
+
+        while (resPrimaryKeys.next) {
+            val columnName = resPrimaryKeys.getString(4)
+            if (setColumns.contains(columnName.toLowerCase)) {
+                primaryKeys = primaryKeys + columnName
+            } else {
+                logger.warn(s"Rejected $columnName")
+            }
+        }
+        resPrimaryKeys.close()
+
+        if (primaryKeys.isEmpty) {
+            logger.error(s"Found no primary keys...")
+            None
+        } else if(primaryKeys.size > 1) {
+            logger.error(s"Found multiple primary keys therefore not picking up any: ${primaryKeys.mkString(",")}")
+            None
+        } else {
+            logger.info(s"Found primary keys, distribution key is. ${primaryKeys.toSeq.head}")
+            Some(primaryKeys.toSeq.head)
+        }
+    }
+
+    def getDistStyleAndKey(setColumns: Set[String], internalConfig: InternalConfig,
+                            primaryKey:Option[String]): Option[String] = {
         internalConfig.distKey match {
-            case Some(key) =>
+            case Some(key) => {
                 logger.info("Found distKey in configuration {}", key)
                 Some(key)
-            case None =>
+            }
+            case None => {
                 logger.info("Found no distKey in configuration")
-                //TODO: SmartFullDump
-                //Check If incremental config is available then use the incremental field as the distkey.
-                //If incremental field is non indexed then raise a warning.
-                //Implementation Details: incrementalColumn can be found here, internalConfig.incrementalSettings.incrementalColumn 
-                
-                val meta = con.getMetaData
-                val resPrimaryKeys = meta.getPrimaryKeys(conf.db, null, conf.tableName)
-                var primaryKeys = scala.collection.immutable.Set[String]()
 
-                while (resPrimaryKeys.next) {
-                    val columnName = resPrimaryKeys.getString(4)
-                    if (setColumns.contains(columnName.toLowerCase)) {
-                        primaryKeys = primaryKeys + columnName
-                    } else {
-                        logger.warn(s"Rejected $columnName")
+                if(internalConfig.incrementalSettings.isDefined) {
+                    val incrementalFieldName = internalConfig.incrementalSettings.get.incrementalColumn.get
+                    if(!primaryKeys.contains(incrementalFieldName)) {
+                        logger.error("Incremental field is not indexed")
+                        //TODO: Crash the code and run only if sudo mode is on
                     }
-                }
-
-                resPrimaryKeys.close()
-                if (primaryKeys.isEmpty) {
-                    logger.error(s"Found no primary keys...")
-                    None
-                } else if(primaryKeys.size > 1) {
-                    logger.error(s"Found multiple primary keys therefore not picking up any: ${primaryKeys.mkString(",")}")
-                    None
+                    Some(incrementalFieldName)
                 } else {
-                    logger.info(s"Found primary keys, distribution key is. ${primaryKeys.toSeq.head}")
-                    Some(primaryKeys.toSeq.head)
+                    primaryKey
                 }
+            }
         }
     }
 

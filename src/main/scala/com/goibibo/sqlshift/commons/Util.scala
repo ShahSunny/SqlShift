@@ -11,6 +11,8 @@ import org.apache.spark.{SparkConf, SparkContext}
 import org.json4s.jackson.JsonMethods._
 import org.json4s.{DefaultFormats, _}
 import org.slf4j.{Logger, LoggerFactory}
+import java.sql.Timestamp
+import org.apache.spark.sql.types._
 
 import scala.util.Try
 
@@ -70,7 +72,6 @@ object Util {
         }
     }
 
-
     /**
       * Get minimum, maximum of primary key if primary key is integer and total records with given where condition
       *
@@ -78,7 +79,9 @@ object Util {
       * @param whereCondition filter condition(without where clause)
       * @return tuple: (min, max)
       */
-    def getMinMax(mysqlDBConf: DBConfiguration, distKey: String, whereCondition: Option[String] = None): (String, String) = {
+    def getMinMax(mysqlDBConf: DBConfiguration, distKey: String, 
+            distKeyType:Option[DataType], 
+            whereCondition: Option[String] = None): (Any, Any) = {
         val connection = RedshiftUtil.getConnection(mysqlDBConf)
 
         var query = s"SELECT min($distKey), max($distKey) FROM ${mysqlDBConf.db}.${mysqlDBConf.tableName}"
@@ -87,12 +90,24 @@ object Util {
         }
         logger.info("Running Query: \n{}", query)
         val result: ResultSet = connection.createStatement().executeQuery(query)
+
         try {
             result.next()
-            val min: String = result.getString(1)
-            val max: String = result.getString(2)
+
+            val res = if(distKeyType == TimestampType) {
+                val min: Timestamp = result.getTimestamp(1)
+                val max: Timestamp = result.getTimestamp(2)    
+                (min,max)
+
+            } else if (distKeyType == IntegerType){
+                val min:Int = result.getInt(1)
+                val max:Int = result.getInt(2)
+                (min,max)
+            } else {
+                throw new IllegalArgumentException("distKeyType is neither IntegerType nor TimestampType");
+            }
+            
             logger.info(s"Minimum $distKey: $min :: Maximum $distKey: $max")
-            (min, max)
         } finally {
             result.close()
             connection.close()

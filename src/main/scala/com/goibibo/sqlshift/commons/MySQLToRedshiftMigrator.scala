@@ -19,8 +19,8 @@ import scala.collection.immutable.Seq
 object MySQLToRedshiftMigrator {
     private val logger: Logger = LoggerFactory.getLogger(MySQLToRedshiftMigrator.getClass)
 
-    private def getFromAndToOffsetTimestamp(incrementalSettings: Option[IncrementalSettings], 
-        distKeyType:Option[DataType], minMax:(String,String)): Option[(String, String)] = {
+    private def getFromAndToOffset(incrementalSettings: Option[IncrementalSettings], 
+        distKeyType:Option[DataType], minMax:(Any,Any)): Option[(Any, Any)] = {
         
         distKeyType.isDefined match {
             case Some(a:IntegerType) => {
@@ -39,23 +39,6 @@ object MySQLToRedshiftMigrator {
                 Some(fromOffset, toOffset)
             }
         } else None
-
-        
-        val column = incrementalSettings.incrementalColumn
-        
-        val toOffset = incrementalSettings.toOffset
-        logger.info(s"Found incremental condition. Column: ${column.orNull}, fromOffset: " +
-                s"${fromOffset.orNull}, toOffset: ${toOffset.orNull}, deltaTime : ${deltaTime.orNull}")
-        if (column.isDefined && fromOffset.isDefined && toOffset.isDefined) {
-            Some(s"${column.get} BETWEEN  AND '${toOffset.get}'")
-        } else if (column.isDefined && fromOffset.isDefined) {
-            Some(s"${column.get} >= date_sub('${fromOffset.get}' , INTERVAL '${deltaTime.get}' MINUTE )")
-        } else if (column.isDefined && toOffset.isDefined) {
-            Some(s"${column.get} <= date_sub('${fromOffset.get}' , INTERVAL '${deltaTime.get}' MINUTE )")
-        } else {
-            logger.info("Either of column or (fromOffset/toOffset) is not provided")
-            None
-        }
     }
 
     private def getWhereCondition(incrementalSettings: IncrementalSettings): Option[String] = {
@@ -103,28 +86,20 @@ object MySQLToRedshiftMigrator {
                 tableDetails.distributionKey match {
                     case Some(distKey) =>
                         val typeOfDistKey = tableDetails.validFields.filter(_.fieldName == distKey).head.fieldType
-                        //Spark supports only long to break the table into multiple fields
-                        //https://github.com/apache/spark/blob/branch-1.6/sql/core/src/main/scala/org/apache/spark/sql/execution/datasources/jdbc/JDBCRelation.scala#L33
+                        
                         val distKeyType:Option[DataType] = {
                             if(typeOfDistKey == "TIMESTAMP") Some(TimestampType)
                             else if typeOfDistKey.startsWith("INT") Some(IntegerType)
                             else None
                         }
+
                         if ( distKeyType.isDefined && 
                                 (distKeyType.get == TimestampType || distKeyType.get == IntegerType)) {
-                            val minMaxTmp: (String, String) = Util.getMinMax(mysqlConfig, distKey, whereCondition)
+                            //minMax needs return minmax in specifc datatype
+                            val minMaxTmp: (Any, Any) = Util.getMinMax(mysqlConfig, distKey, distKeyType.get, whereCondition)
 
-                            //TODO: SmartFullDump
-                            //Finding out whereCondition is not required because in the case of incremental
-                            //We directy cut based on timestamp field
-                            // val whereCondition = internalConfig.incrementalSettings match {
-                            //     case Some(incrementalSettings) =>
-                            //         getWhereCondition(incrementalSettings)
-                            //     case None =>
-                            //         logger.info("No incremental condition found")
-                            //         None
-                            // }
-                            
+
+                            //Below implementation will stay for datatype Int
                             val minMax: (Long, Long) = (minMaxTmp._1.toLong, minMaxTmp._2.toLong)
                             val nr: Long = minMax._2 - minMax._1 + 1
 
